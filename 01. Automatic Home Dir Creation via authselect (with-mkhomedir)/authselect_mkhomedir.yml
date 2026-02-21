@@ -1,0 +1,97 @@
+---
+# Playbook to ensure mkhomedir feature is enabled using authselect
+- name: Ensure authselect mkhomedir feature is enabled
+  hosts: "{{ group }}"              # Run on hosts passed via inventory group
+  become: true                      # Run tasks with root privileges
+  gather_facts: true                # Collect system facts like hostname and IP
+
+  vars:
+    report_file: "/tmp/{{ group }}_mkhomedir_report.csv"   # CSV report file path
+
+  tasks:
+
+    # Check whether authselect command exists on the system
+    - name: Check if authselect is installed
+      command: which authselect
+      register: authselect_bin        # Save command result
+      ignore_errors: true             # Do not fail play if missing
+      changed_when: false             # This task never changes state
+
+    # Store an error message if authselect is not found
+    - name: Mark authselect missing
+      set_fact:
+        error_msg: "authselect not installed"
+      when: authselect_bin.rc != 0
+
+    # Stop execution on this host if authselect is missing
+    - name: Stop further tasks if authselect missing
+      meta: end_host
+      when: authselect_bin.rc != 0
+
+    # Get current authselect profile and enabled features
+    - name: Get current authselect profile and features
+      command: authselect current
+      register: authselect_current
+      changed_when: false
+
+    # Check if mkhomedir feature is already enabled
+    - name: Check if mkhomedir feature is already enabled
+      set_fact:
+        mkhomedir_enabled: "{{ 'with-mkhomedir' in authselect_current.stdout }}"
+
+    # Enable mkhomedir only if it is not already enabled
+    - name: Enable mkhomedir feature if missing
+      command: authselect enable-feature with-mkhomedir
+      when: not mkhomedir_enabled
+      register: enable_mkhomedir       # Capture command result
+      ignore_errors: true              # Continue even if enable fails
+
+    # Apply authselect changes only when enable-feature succeeded
+    - name: Apply authselect changes if feature was enabled
+      command: authselect apply-changes
+      when:
+        - enable_mkhomedir is defined
+        - enable_mkhomedir is not skipped
+        - enable_mkhomedir.rc == 0
+
+    # Prepare final status values for reporting
+    - name: Set final status facts
+      set_fact:
+        already_enabled_flag: "{{ 'YES' if mkhomedir_enabled else 'NO' }}"
+        enabled_by_playbook: >-
+          {{ 'YES'
+             if (enable_mkhomedir is defined
+                 and enable_mkhomedir is not skipped
+                 and enable_mkhomedir.rc == 0)
+             else 'NO' }}
+        error_final: >-
+          {{
+            enable_mkhomedir.stderr
+            if (enable_mkhomedir is defined
+                and enable_mkhomedir is not skipped
+                and enable_mkhomedir.rc != 0)
+            else (error_msg | default(''))
+          }}
+
+    # Create CSV file header once on localhost
+    - name: Create CSV header (once)
+      run_once: true                  # Run only once for all hosts
+      delegate_to: localhost          # Execute on control node
+      become: false
+      copy:
+        dest: "{{ report_file }}"
+        content: |
+          hostname,ip,already_enabled,enabled_by_playbook,error
+
+    # Append each host result as a row in the CSV
+    - name: Append host result to CSV
+      delegate_to: localhost
+      become: false
+      lineinfile:
+        path: "{{ report_file }}"
+        line: >-
+          {{ ansible_hostname }},
+          {{ ansible_default_ipv4.address | default('NA') }},
+          {{ already_enabled_flag }},
+          {{ enabled_by_playbook }},
+          {{ error_final | replace(',', ';') }}
