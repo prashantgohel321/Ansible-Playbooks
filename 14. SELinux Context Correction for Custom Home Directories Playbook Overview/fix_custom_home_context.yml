@@ -1,0 +1,50 @@
+---
+- name: Fix SELinux contexts for custom home directory
+  hosts: custom_home_servers
+  become: true
+  gather_facts: false
+
+  vars:
+    custom_home_root: /datadisk/home
+    rundeck_user: rundeck
+
+  tasks:
+
+    # ----------------------------
+    # Ensure SELinux tools exist
+    # ----------------------------
+    - name: Ensure SELinux tools are installed
+      package:
+        name:
+          - policycoreutils
+          - policycoreutils-python-utils
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    # ----------------------------
+    # Treat /datadisk/home as home root
+    # ----------------------------
+    - name: Set SELinux context for custom home root
+      sefcontext:
+        target: "{{ custom_home_root }}"
+        setype: home_root_t
+        state: present
+
+    - name: Set SELinux context for all user homes under custom home
+      sefcontext:
+        target: "{{ custom_home_root }}/[^/]+"
+        setype: user_home_dir_t
+        state: present
+
+    - name: Set SELinux context for rundeck .ssh directory
+      sefcontext:
+        target: "{{ custom_home_root }}/{{ rundeck_user }}/\\.ssh(/.*)?"
+        setype: ssh_home_t
+        state: present
+
+    # ----------------------------
+    # Apply contexts safely
+    # ----------------------------
+    - name: Restore SELinux contexts under custom home
+      command: restorecon -RFv "{{ custom_home_root }}"
+      changed_when: false
