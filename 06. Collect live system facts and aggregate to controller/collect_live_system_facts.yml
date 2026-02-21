@@ -1,0 +1,61 @@
+---
+- name: Collect live system facts
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+
+  - name: Get OS information
+    shell: |
+      . /etc/os-release
+      echo "$NAME|$VERSION_ID"
+    register: os_info
+    changed_when: false
+
+  - name: Get root disk size (GB)
+    shell: |
+      df -BG / | tail -1 | awk '{print $2}' | sed 's/G//'
+    register: root_disk
+    changed_when: false
+
+  - name: Get datadisk size (GB)
+    shell: |
+      if mountpoint -q /datadisk; then
+        df -BG /datadisk | tail -1 | awk '{print $2}' | sed 's/G//'
+      else
+        echo "No Disk"
+      fi
+    register: datadisk
+    changed_when: false
+
+  - name: Build host facts dictionary
+    set_fact:
+      live_facts:
+        cpu_cores: "{{ ansible_facts.processor_vcpus | default(0) }}"
+        ram_gb: "{{ (ansible_facts.memtotal_mb / 1024) | round(0, 'floor') }}"
+        root_disk_gb: "{{ root_disk.stdout | default('0') }}"
+        datadisk_gb: "{{ datadisk.stdout | default('0') }}"
+        os_type: "{{ (os_info.stdout.split('|') | length > 0) | ternary(os_info.stdout.split('|')[0], 'N/A') }}"
+        os_version: "{{ (os_info.stdout.split('|') | length > 1) | ternary(os_info.stdout.split('|')[1], 'N/A') }}"
+
+
+  - name: Aggregate facts on controller
+    delegate_to: localhost
+    run_once: true
+    become: false
+    vars:
+      facts_file: "{{ playbook_dir }}/../facts/live_facts.json"
+      merged: {}
+    block:
+
+      - name: Build merged facts dict
+        set_fact:
+          merged: "{{ merged | combine({ item.key: item.value.live_facts }) }}"
+        loop: "{{ hostvars | dict2items }}"
+        when: item.value.live_facts is defined
+
+      - name: Write facts file
+        copy:
+          content: "{{ merged | to_nice_json }}"
+          dest: "{{ facts_file }}"
