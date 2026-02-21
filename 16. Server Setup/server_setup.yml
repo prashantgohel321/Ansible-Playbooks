@@ -1,0 +1,226 @@
+---
+- name: Linux Server Bootstrap (Idempotent & Production Safe)
+  hosts: newservers
+  become: true
+  gather_facts: true
+
+  vars:
+    # Disk/LVM variables
+    disk_name: ""
+    disk_device: "/dev/{{ disk_name }}"
+    partition_device: "/dev/{{ disk_name }}1"
+    vg_name: "rl2"
+    lv_name: "datadisk"
+    mount_point: "/datadisk"
+    filesystem_type: "ext4"
+    setup_datadisk: false
+
+    # Domain variables
+    domain_name: "TSS.COM"
+    profile_name: "TSS"
+
+    # Logging
+    log_base_dir: "/datadisk/home/ansible/bootstrap_logs"
+    run_id: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+
+  vars_prompt:
+    - name: realm_admin_user
+      prompt: "Enter Domain Admin Username"
+      private: no
+    - name: realm_admin_password
+      prompt: "Enter Domain Admin Password"
+      private: yes
+
+  pre_tasks:
+
+    - name: Ensure central log directory exists (controller)
+      delegate_to: localhost
+      become: false
+      run_once: true
+      file:
+        path: "{{ log_base_dir }}/{{ run_id }}"
+        state: directory
+        mode: "0755"
+
+  tasks:
+
+  # ==========================================================
+  # DISK SETUP (SAFE & IDEMPOTENT)
+  # ==========================================================
+
+    - name: Check disk exists
+      stat:
+        path: "{{ disk_device }}"
+      register: disk_stat
+      when: setup_datadisk
+
+    - name: Create partition if missing
+      community.general.parted:
+        device: "{{ disk_device }}"
+        number: 1
+        state: present
+        part_type: primary
+        flags: [ lvm ]
+      when:
+        - setup_datadisk
+        - disk_stat.stat.exists
+
+    - name: Create Volume Group
+      lvg:
+        vg: "{{ vg_name }}"
+        pvs: "{{ partition_device }}"
+      when:
+        - setup_datadisk
+        - disk_stat.stat.exists
+
+    - name: Create Logical Volume
+      lvol:
+        vg: "{{ vg_name }}"
+        lv: "{{ lv_name }}"
+        size: 100%FREE
+        state: present
+      when: setup_datadisk
+
+    - name: Create filesystem if not exists
+      filesystem:
+        fstype: "{{ filesystem_type }}"
+        dev: "/dev/{{ vg_name }}/{{ lv_name }}"
+      when: setup_datadisk
+
+    - name: Ensure mount directory exists
+      file:
+        path: "{{ mount_point }}"
+        state: directory
+        mode: "0755"
+      when: setup_datadisk
+
+    - name: Mount and persist volume
+      mount:
+        path: "{{ mount_point }}"
+        src: "/dev/{{ vg_name }}/{{ lv_name }}"
+        fstype: "{{ filesystem_type }}"
+        state: mounted
+      when: setup_datadisk
+
+  # ==========================================================
+  # DOMAIN JOIN (SAFE CHECK)
+  # ==========================================================
+
+    - name: Check current realm
+      command: realm list
+      register: realm_status
+      changed_when: false
+
+    - name: Join domain if not joined
+      expect:
+        command: realm join {{ domain_name }} -U {{ realm_admin_user }}
+        responses:
+          Password.*: "{{ realm_admin_password }}"
+      no_log: true
+      when: domain_name not in realm_status.stdout
+
+  # ==========================================================
+  # SSSD CONFIGURATION
+  # ==========================================================
+
+    - name: Deploy sssd configuration
+      template:
+        src: templates/sssd.conf
+        dest: /etc/sssd/sssd.conf
+        owner: root
+        group: root
+        mode: "0600"
+      notify: restart sssd
+
+  # ==========================================================
+  # SELINUX CONTEXT (ONLY IF DATADISK)
+  # ==========================================================
+
+    - name: Define SELinux context for mount
+      sefcontext:
+        target: "{{ mount_point }}(/.*)?"
+        setype: default_t
+        state: present
+      when: setup_datadisk
+
+    - name: Restore SELinux context
+      command: restorecon -Rv {{ mount_point }}
+      when: setup_datadisk
+
+  # ==========================================================
+  # AUTHSELECT (SAFE & CHECKED)
+  # ==========================================================
+
+    - name: Check if authselect installed
+      command: which authselect
+      register: authselect_bin
+      changed_when: false
+      failed_when: false
+
+    - name: End host if authselect missing
+      meta: end_host
+      when: authselect_bin.rc != 0
+
+    - name: Get current authselect configuration
+      command: authselect current
+      register: authselect_current
+      changed_when: false
+
+    - name: Create custom profile if not exists
+      command: authselect create-profile {{ profile_name }} --base-on sssd
+      args:
+        creates: "/etc/authselect/custom/{{ profile_name }}"
+      when: "'custom/{{ profile_name }}' not in authselect_current.stdout"
+
+    - name: Select custom profile
+      command: authselect select custom/{{ profile_name }} --force
+      when: "'custom/{{ profile_name }}' not in authselect_current.stdout"
+      notify: apply authselect
+
+    - name: Enable mkhomedir feature if missing
+      command: authselect enable-feature with-mkhomedir
+      register: enable_mkhomedir
+      when: "'with-mkhomedir' not in authselect_current.stdout"
+      notify: apply authselect
+
+    - name: Ensure oddjob-mkhomedir running
+      systemd:
+        name: oddjob-mkhomedir
+        enabled: true
+        state: started
+      failed_when: false
+
+  # ==========================================================
+  # EXECUTION SUMMARY LOGGING (CONTROL NODE)
+  # ==========================================================
+
+    - name: Build execution summary
+      set_fact:
+        execution_summary: |
+          =================================================
+          Host: {{ inventory_hostname }}
+          Time: {{ ansible_date_time.iso8601 }}
+
+          Disk Setup: {{ setup_datadisk }}
+          Domain Joined: {{ domain_name in realm_status.stdout }}
+          Authselect Profile:
+          {{ authselect_current.stdout | default('N/A') }}
+
+          =================================================
+
+    - name: Write host execution log
+      delegate_to: localhost
+      become: false
+      copy:
+        dest: "{{ log_base_dir }}/{{ run_id }}/{{ inventory_hostname }}.log"
+        content: "{{ execution_summary }}"
+
+  handlers:
+
+    - name: restart sssd
+      systemd:
+        name: sssd
+        state: restarted
+
+    - name: apply authselect
+      command: authselect apply-changes
