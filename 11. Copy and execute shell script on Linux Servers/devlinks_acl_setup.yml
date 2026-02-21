@@ -1,0 +1,19 @@
+---
+- name: Copy and Execute Shell Script on Multiple Linux Servers
+  hosts: all
+  become: true  # Use become to run as root (if needed)
+  tasks:
+
+    - name: Copy the .sh script from Ansible control node to target server
+      copy:
+        src: "~/scripts/devlink_acl_setup.sh" #Path to the script on the Ansible control node
+        dest: "/tmp/install_devlinks_acl.sh"  # Destination path on the target server
+        mode: '0755'                          # Set permissions to make the script executable
+
+    - name: Execute the .sh script
+      command: "/tmp/install_devlinks_acl.sh"  # Execute the script on the target node
+
+    - name: Optionally remove the script after execution
+      file:
+        path: "/tmp/install_devlinks_acl.sh"  # Remove the script from the target server
+        state: absent
