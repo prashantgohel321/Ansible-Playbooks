@@ -1,0 +1,19 @@
+---
+- name: Download, Install, and Delete RPM on Linux Server
+  hosts: all
+  become: true
+  tasks:
+
+    - name: Download the RPM file
+      get_url:
+        url: "http://192.168.107.114/tssrpms/tss-auditconfig-1.0-1.noarch.rpm"
+        dest: "/tmp/tss-auditconfig-1.0-1.noarch.rpm"
+
+    - name: Install the RPM package
+      command:
+        cmd: rpm -ivh /tmp/tss-auditconfig-1.0-1.noarch.rpm
+
+    - name: Remove the downloaded RPM file
+      file:
+        path: "/tmp/tss-auditconfig-1.0-1.noarch.rpm"
+        state: absent
