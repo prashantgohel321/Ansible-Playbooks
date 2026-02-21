@@ -1,0 +1,45 @@
+---
+- name: Zabbix Active Check Audit
+  hosts: "{{ group }}"
+  gather_facts: yes
+  become: yes
+
+  vars:
+    report_file: "/tmp/{{ group }}_zabbix_active_check_report.txt"
+
+  tasks:
+    - name: Check zabbix agent config files
+      shell: |
+        grep -h "^ServerActive" /etc/zabbix/zabbix_agent*.conf 2>/dev/null || true
+      register: serveractive_check
+      changed_when: false
+
+    - name: Set active check status fact
+      set_fact:
+        active_check_status: >-
+          {{ "YES" if serveractive_check.stdout != "" else "NO" }}
+
+    - name: Build host report line
+      set_fact:
+        report_line: >-
+          {{ ansible_default_ipv4.address | default('NA') }}
+          {{ ansible_hostname }}
+          {{ active_check_status }}
+
+    - name: Create report header (once)
+      run_once: true
+      delegate_to: localhost
+      become: false
+      copy:
+        dest: "{{ report_file }}"
+        content: |
+          IP_ADDRESS        HOSTNAME                ACTIVE_CHECK
+          -------------------------------------------------------
+
+    - name: Append host result to report
+      delegate_to: localhost
+      become: false
+      lineinfile:
+        path: "{{ report_file }}"
+        line: "{{ report_line }}"
+        create: yes
