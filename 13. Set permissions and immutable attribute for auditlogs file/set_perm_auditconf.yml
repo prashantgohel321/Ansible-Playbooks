@@ -1,0 +1,21 @@
+---
+- name: Set permissions and attributes for acl_update file
+  hosts: all
+  become: true  # To run as root (if required)
+  gather_facts: false  # We don't need facts for this task
+
+  tasks:
+    - name: Check if /usr/local/bin/auditlogs file exists
+      stat:
+        path: /usr/local/bin/auditlogs
+      register: auditlogs_file
+
+    - name: Set chmod 700 on /usr/local/bin/auditlogs if file exists
+      command:
+        cmd: chmod 700 /usr/local/bin/auditlogs
+      when: auditlogs_file.stat.exists
+
+    - name: Set chattr +i on /usr/local/bin/auditlogs if file exists
+      command:
+        cmd: chattr +i /usr/local/bin/auditlogs
+      when: auditlogs_file.stat.exists
