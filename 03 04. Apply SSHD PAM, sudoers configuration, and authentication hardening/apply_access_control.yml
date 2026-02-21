@@ -1,0 +1,75 @@
+---
+- name: Apply SSHD PAM and authselect (all servers)
+  hosts: "{{ group }}"
+  become: yes
+  tasks:
+    - name: Install required packages
+      dnf:
+        name:
+          - realmd
+          - sssd
+          - sssd-tools
+          - adcli
+          - oddjob
+          - oddjob-mkhomedir
+          - authselect
+        update_cache: yes
+        state: present
+      tags: packages
+
+    - name: COPY sshd PAM template
+      copy:
+        src: ~/config/sshd.pam.template
+        dest: /tmp/sshd.pam.template
+        mode: '0644'
+
+    - name: COPY sudoers main template
+      copy:
+        src: ~/config/sudoers.template
+        dest: /tmp/sudoers.template
+        mode: '0644'
+
+    - name: Copy sshd_pam_fix.sh
+      copy:
+        src: ~/scripts/sshd_pam_fix.sh
+        dest: /tmp/sshd_pam_fix.sh
+        mode: '0755'
+
+    - name: Apply SSHD PAM changes
+      command: /tmp/sshd_pam_fix.sh
+
+
+
+
+- name: Apply sudoers on "{{ group }}" servers
+  hosts:  "{{ group }}"
+  become: yes
+  tasks:
+    - name: Copy sudoers_setup.sh
+      copy:
+        src: ~/scripts/sudoers_setup.sh
+        dest: /tmp/sudoers_setup.sh
+        mode: '0755'
+
+    - name: Apply "{{ group }}" sudoers
+      command: "/tmp/sudoers_setup.sh {{ group }}"
+
+
+- name: Disable pam_rootok in su
+  hosts: "{{ group }}"
+  become: yes
+  tasks:
+    - name: Comment pam_rootok line in /etc/pam.d/su
+      lineinfile:
+        path: /etc/pam.d/su
+        regexp: '^auth\s+sufficient\s+pam_rootok\.so'
+        line: '#auth sufficient pam_rootok.so'
+        backrefs: yes
+
+
+- name: Cleanup
+  hosts: "{{ group }}"
+  become: yes
+  tasks:
+    - name: Removing copied files from tmp directory
+      command: rm /tmp/sshd.pam.template /tmp/sudoers.template /tmp/sshd_pam_fix.sh /tmp/sudoers_setup.sh
