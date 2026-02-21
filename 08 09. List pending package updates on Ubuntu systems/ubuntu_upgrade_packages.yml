@@ -1,0 +1,60 @@
+---
+- name: Upgrade packages on Ubuntu servers
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    log_dir: "/datadisk/home/ansible/Ubuntu_Patch_Results/ubuntu_upgrade_logs"
+
+  pre_tasks:
+    - name: Ensure log directory exists on controller
+      delegate_to: localhost
+      become: false
+      run_once: true
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Stop if not Ubuntu
+      fail:
+        msg: "This playbook is only for Ubuntu"
+      when: ansible_distribution != "Ubuntu"
+
+  tasks:
+    - block:
+        - name: Update apt cache
+          apt:
+            update_cache: yes
+
+        - name: Upgrade packages
+          apt:
+            upgrade: dist
+          register: upgrade_result
+
+        - name: Write SUCCESS upgrade log
+          delegate_to: localhost
+          become: false
+          copy:
+            dest: "{{ log_dir }}/{{ inventory_hostname }}.log"
+            content: |
+              Host: {{ inventory_hostname }}
+              Date: {{ ansible_date_time.iso8601 }}
+
+              Upgrade successful
+              Changed: {{ upgrade_result.changed }}
+
+      rescue:
+        - name: Write FAILURE upgrade log
+          delegate_to: localhost
+          become: false
+          copy:
+            dest: "{{ log_dir }}/{{ inventory_hostname }}.error"
+            content: |
+              Host: {{ inventory_hostname }}
+              Date: {{ ansible_date_time.iso8601 }}
+
+              Upgrade failed
+              Error details:
+              {{ ansible_failed_result | to_nice_json }}

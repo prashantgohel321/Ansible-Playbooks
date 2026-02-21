@@ -1,0 +1,47 @@
+---
+- name: List pending package updates (Ubuntu)
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    output_dir: "/datadisk/home/ansible/Ubuntu_Patch_Results/ubuntu_pending_updates"
+
+  pre_tasks:
+    - name: Ensure output directory exists on controller
+      delegate_to: localhost
+      become: false
+      run_once: true
+      file:
+        path: "{{ output_dir }}"
+        state: directory
+        mode: "0755"
+
+  tasks:
+    - name: Ensure apt cache is updated (safe)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      changed_when: false
+
+    - name: List packages that would be upgraded
+      shell: |
+        apt-get -s upgrade
+      register: upgrade_list
+      changed_when: false
+
+    - name: Save upgrade list per host on controller
+      delegate_to: localhost
+      become: false
+      copy:
+        dest: "{{ output_dir }}/{{ inventory_hostname }}.txt"
+        content: |
+          Host: {{ inventory_hostname }}
+
+          {% if upgrade_list.stdout_lines %}
+          {% for line in upgrade_list.stdout_lines %}
+          {{ line }}
+          {% endfor %}
+          {% else %}
+          No packages pending for upgrade
+          {% endif %}
