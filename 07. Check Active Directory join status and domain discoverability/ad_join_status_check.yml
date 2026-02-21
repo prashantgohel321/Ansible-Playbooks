@@ -1,0 +1,90 @@
+---
+- name: Check AD join and domain discoverability
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    ad_domain: tss.com
+
+  tasks:
+    # ----------------------------
+    # Check if realm exists
+    # ----------------------------
+    - name: Check if realm is installed
+      command: which realm
+      register: realm_bin
+      ignore_errors: true
+      changed_when: false
+
+    # ----------------------------
+    # realm list (AD join status)
+    # ----------------------------
+    - name: Check AD join status
+      command: realm list
+      register: realm_list
+      when: realm_bin.rc == 0
+      ignore_errors: true
+      changed_when: false
+
+    # ----------------------------
+    # realm discover (DNS / DC reachability)
+    # ----------------------------
+    - name: Check AD domain discoverability
+      command: realm discover {{ ad_domain }}
+      register: realm_discover
+      when: realm_bin.rc == 0
+      ignore_errors: true
+      changed_when: false
+
+
+
+
+    # ----------------------------
+    # Build AD facts safely
+    # ----------------------------
+    - name: Build AD status facts
+      set_fact:
+        ad_joined: >-
+          {{ 'Yes' if realm_list.stdout | length > 0 else 'No' }}
+
+        ad_domain_joined: >-
+          {{
+            realm_list.stdout
+            | regex_search('domain-name:\\s*(\\S+)')
+            | default('N/A', true)
+          }}
+
+        ad_discoverable: >-
+          {{ 'Yes' if realm_discover.rc == 0 else 'No' }}
+
+        join_method: >-
+          {% if realm_list.stdout is search('sssd') %}
+          sssd
+          {% elif realm_list.stdout is search('winbind') %}
+          winbind
+          {% else %}
+          none
+          {% endif %}
+
+    # ----------------------------
+    # CSV aggregation on controller
+    # ----------------------------
+    - name: Generate AD status CSV (controller only)
+      delegate_to: localhost
+      run_once: true
+      become: false
+      vars:
+        csv_file: "./output/ad_status_report.csv"
+      copy:
+        dest: "{{ csv_file }}"
+        content: |
+          Hostname,IP,AD_Joined,AD_Domain,AD_Discoverable,Join_Method
+          {% for h in groups['all'] %}
+          {{ h }},
+          {{ hostvars[h].ansible_host | default('N/A') }},
+          {{ hostvars[h].ad_joined | default('No') }},
+          {{ hostvars[h].ad_domain_joined | default('N/A') }},
+          {{ hostvars[h].ad_discoverable | default('No') }},
+          {{ hostvars[h].join_method | default('none') }}
+          {% endfor %}
