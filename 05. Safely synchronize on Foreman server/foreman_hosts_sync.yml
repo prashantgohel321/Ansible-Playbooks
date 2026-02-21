@@ -1,0 +1,21 @@
+---
+- name: Safely sync /etc/hosts on Foreman server
+  hosts: foreman
+  become: true
+  vars:
+    hosts_block: "{{ lookup('file', '/datadisk/home/ansible/infrastructure_setup/generated_foreman_hosts.txt') }}"
+
+  tasks:
+    - name: Backup /etc/hosts with timestamp
+      copy:
+        src: /etc/hosts
+        dest: "/etc/hosts.bak_{{ ansible_date_time.iso8601 }}"
+        remote_src: true
+
+    - name: Manage Foreman managed hosts block
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} MANAGED BY SERVER_MANAGER"
+        block: "{{ hosts_block }}"
+        create: true
+        backup: true
