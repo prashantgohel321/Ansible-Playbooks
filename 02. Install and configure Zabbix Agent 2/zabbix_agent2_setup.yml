@@ -1,0 +1,57 @@
+---
+- name: Install and configure Zabbix Agent 2
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    zabbix_server_ip: "192.168.110.155"
+    zabbix_conf: "/etc/zabbix/zabbix_agent2.conf"
+
+  tasks:
+
+    - name: Install zabbix-agent2
+      package:               # Using 'package' module for generic package management
+        name: zabbix-agent2
+        state: present       # ensure the package is installed
+
+    - name: Ensure Zabbix Agent 2 service is enabled
+      service:
+        name: zabbix-agent2
+        enabled: yes         # ensure the service is enabled
+
+    - name: Set Server IP (passive checks)
+      lineinfile:                             
+        path: "{{ zabbix_conf }}"
+        regexp: '^Server='
+        line: "Server={{ zabbix_server_ip }}"
+        backup: yes
+      notify: Restart zabbix-agent2
+
+    - name: Set Listen IP to current server IP
+      lineinfile:
+        path: "{{ zabbix_conf }}"
+        regexp: '^(#\s*)?ListenIP='
+        line: "ListenIP={{ ansible_default_ipv4.address }}"
+      notify: Restart zabbix-agent2
+
+    - name: Set ServerActive IP (active checks)
+      lineinfile:
+        path: "{{ zabbix_conf }}"
+        regexp: '^#?ServerActive='
+        line: "ServerActive={{ zabbix_server_ip }}"
+      notify: Restart zabbix-agent2
+
+
+    - name: Set Hostname to inventory hostname
+      lineinfile:
+        path: "{{ zabbix_conf }}"
+        regexp: '^#?Hostname='
+        line: "Hostname={{ inventory_hostname }}"
+      notify: Restart zabbix-agent2
+
+  handlers:               # handlers section is used to define actions triggered by notify
+    - name: Restart zabbix-agent2
+      service:
+        name: zabbix-agent2
+        state: restarted   # restart the service when notified
