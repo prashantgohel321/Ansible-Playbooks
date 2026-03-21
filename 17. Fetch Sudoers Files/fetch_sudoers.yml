@@ -1,0 +1,31 @@
+---
+- name: Fetch all sudoers.d files from servers
+  hosts: "{{ group }}"
+  become: yes
+  gather_facts: no
+
+  vars:
+    local_base_dir: "/datadisk/home/ansible/sudoers_files"
+
+  tasks:
+
+    - name: Ensure department + host directory exists
+      delegate_to: localhost
+      file:
+        path: "{{ local_base_dir }}/{{ group }}/{{ inventory_hostname }}"
+        state: directory
+        mode: '0777'
+
+    - name: Find all files inside /etc/sudoers.d
+      find:
+        paths: /etc/sudoers.d
+        file_type: file
+      register: sudoers_files
+
+    - name: Fetch each sudoers file
+      fetch:
+        src: "{{ item.path }}"
+        dest: "{{ local_base_dir }}/{{ group }}/{{ inventory_hostname }}/"
+        flat: yes
+      loop: "{{ sudoers_files.files }}"
+
