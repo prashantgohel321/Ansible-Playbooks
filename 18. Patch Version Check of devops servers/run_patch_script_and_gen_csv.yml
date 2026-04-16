@@ -1,0 +1,180 @@
+---
+- name: Deploy + Execute + Collect Patch Data
+  hosts: all
+  become: true
+  gather_facts: false
+  ignore_unreachable: true
+
+  vars:
+    base_dir: /tmp/Patch
+    script_dir: /tmp/Patch/scripts
+    log_dir: /tmp/Patch/Logs
+
+    local_script_path: /datadisk/home/ansible/scripts/Patch
+
+
+
+  tasks:
+
+    # -----------------------------------
+    # Ensure directories
+    # -----------------------------------
+
+    - name: Ensure base dir exists
+      file:
+        path: "{{ base_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Ensure script dir exists
+      file:
+        path: "{{ script_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Ensure log dir exists
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+
+
+
+    # -----------------------------------
+    # Copy scripts if missing
+    # -----------------------------------
+
+    - name: Check CheckVersion script
+      stat:
+        path: "{{ script_dir }}/CheckVersion.sh"
+      register: cv_stat
+
+    - name: Copy CheckVersion script if missing
+      copy:
+        src: "{{ local_script_path }}/CheckVersion.sh"
+        dest: "{{ script_dir }}/CheckVersion.sh"
+        mode: '0755'
+      when: not (cv_stat.stat.exists | default(false))
+
+    - name: Check VersionLock script
+      stat:
+        path: "{{ script_dir }}/VersionLock.sh"
+      register: vl_stat
+
+    - name: Copy VersionLock script if missing
+      copy:
+        src: "{{ local_script_path }}/VersionLock.sh"
+        dest: "{{ script_dir }}/VersionLock.sh"
+        mode: '0755'
+      when: not (vl_stat.stat.exists | default(false))
+
+
+
+    # -----------------------------------
+    # Install versionlock safely
+    # -----------------------------------
+
+    - name: Check versionlock availability
+      shell: dnf help | grep versionlock
+      register: vl_check
+      changed_when: false
+      ignore_errors: true
+
+    - name: Install versionlock plugin
+      dnf:
+        name: dnf-command(versionlock)
+        state: present
+      when: vl_check is failed or vl_check.rc != 0
+      ignore_errors: true
+
+
+
+    # -----------------------------------
+    # Execute scripts
+    # -----------------------------------
+
+    - name: Run VersionLock script
+      shell: bash {{ script_dir }}/VersionLock.sh
+      register: vl_output
+      changed_when: false
+      ignore_errors: true
+
+    - name: Run CheckVersion script
+      shell: bash {{ script_dir }}/CheckVersion.sh
+      register: cv_output
+      changed_when: false
+      ignore_errors: true
+
+
+
+    # -----------------------------------
+    # Parse output safely
+    # -----------------------------------
+
+    - name: Convert output to dictionary
+      set_fact:
+        parsed_data: >-
+          {{
+            dict(
+              cv_output.stdout_lines
+              | select('search', '=')
+              | map('split', '=', 1)
+              | list
+            )
+          }}
+      when: cv_output.stdout is defined
+
+    - name: Prepare CSV row
+      set_fact:
+        csv_row: >-
+          {{ inventory_hostname }},
+          {{ parsed_data.IP | default('-') }},
+          {{ parsed_data.DOTNET | default('-') }},
+          {{ parsed_data.JAVA | default('-') }},
+          {{ parsed_data.DOCKER | default('-') }},
+          {{ parsed_data.PODMAN | default('-') }},
+          {{ parsed_data.AZCLI | default('-') }},
+          {{ parsed_data.AZCOPY | default('-') }},
+          {{ parsed_data.NODE | default('-') }},
+          {{ parsed_data.NPM | default('-') }}
+      when: parsed_data is defined
+
+
+
+
+# ==========================================================
+# Generate CSV on controller
+# ==========================================================
+
+- name: Generate CSV on controller
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+
+    - name: Set timestamp once
+      set_fact:
+        report_file: "/tmp/Patch/final_report_{{ lookup('pipe','date +%Y%m%d_%H%M%S') }}.csv"
+
+    - name: Ensure directory exists
+      file:
+        path: /tmp/Patch
+        state: directory
+        mode: '0755'
+
+    - name: Write header
+      copy:
+        dest: "{{ report_file }}"
+        content: "HOSTNAME,IP,DOTNET,JAVA,DOCKER,PODMAN,AZCLI,AZCOPY,NODE,NPM\n"
+
+    - name: Append rows
+      lineinfile:
+        path: "{{ report_file }}"
+        line: "{{ hostvars[item].csv_row | replace(' ', '') }}"
+        insertafter: EOF
+      loop: "{{ groups['all'] }}"
+      when: hostvars[item].csv_row is defined
+
+    - name: Show output
+      debug:
+        msg: "CSV generated at {{ report_file }}"
